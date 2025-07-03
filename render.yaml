@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: tanki-bot
+    env: python
+    pythonVersion: "3.11"
+    # other config as needed (build, start command etc.)
