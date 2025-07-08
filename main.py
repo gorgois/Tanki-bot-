@@ -58,7 +58,11 @@ def get_xp_settings(guild_id):
             "level_roles": {},
             "dm_enabled": True,
             "level_channel": None,
-            "profile_bg": None
+            "profile_bg": None,
+            # Customization defaults:
+            "embed_color": "#00ff99",
+            "background_url": None,
+            "card_theme": "default",
         }
     return config[guild_id]
 
@@ -136,9 +140,9 @@ def is_valid_image_url(url):
     return bool(re.match(r'^https?:\/\/.*', url, re.IGNORECASE)) and \
            bool(re.search(r'\.(png|jpg|jpeg|gif|webp)', url, re.IGNORECASE))
 
-# -------------------------
-# Slash Commands Start Here
-# -------------------------
+# ---------------------------------
+# Slash Commands (Old + New merged)
+# ---------------------------------
 
 @tree.command(name="rank", description="Check your rank and XP")
 async def rank(interaction: discord.Interaction):
@@ -407,6 +411,7 @@ async def set_profile_bg(interaction: discord.Interaction, url: str):
     settings["profile_bg"] = url
     save_data()
     await interaction.response.send_message("✅ Profile background set!")
+
 @tree.command(name="toggle-dms", description="Toggle DM level-up messages (admin only)")
 @app_commands.describe(enabled="True to enable, False to disable")
 async def toggle_dms(interaction: discord.Interaction, enabled: bool):
@@ -419,20 +424,63 @@ async def toggle_dms(interaction: discord.Interaction, enabled: bool):
     status = "enabled" if enabled else "disabled"
     await interaction.response.send_message(f"✅ Level-up DM messages {status}.")
 
-@tree.command(name="top", description="Show top 10 users by XP")
-async def top(interaction: discord.Interaction):
-    guild_id = str(interaction.guild.id)
-    if guild_id not in xp_data or not xp_data[guild_id]:
-        await interaction.response.send_message("No XP data available.")
+@tree.command(name="set-embed-color", description="Set embed color (admin only)")
+@app_commands.describe(color="Hex color code, e.g. #00ff99")
+async def set_embed_color(interaction: discord.Interaction, color: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don’t have permission to use this command.", ephemeral=True)
         return
-    sorted_users = sorted(xp_data[guild_id].items(), key=lambda x: x[1]["xp"], reverse=True)[:10]
-    description = ""
-    for i, (user_id, data) in enumerate(sorted_users, 1):
-        user = interaction.guild.get_member(int(user_id))
-        name = user.display_name if user else f"User ID {user_id}"
-        description += f"**{i}. {name}** — Level {data['level']} ({data['xp']} XP)\n"
-    embed = discord.Embed(title=f"🏆 Top 10 XP in {interaction.guild.name}", description=description, color=discord.Color.gold())
-    await interaction.response.send_message(embed=embed)
+    # Simple hex color validation
+    if not re.match(r"^#([A-Fa-f0-9]{6})$", color):
+        await interaction.response.send_message("❌ Please provide a valid hex color code like #00ff99.", ephemeral=True)
+        return
+    settings = get_xp_settings(interaction.guild.id)
+    settings["embed_color"] = color
+    save_data()
+    await interaction.response.send_message(f"✅ Embed color set to {color}.")
+
+@tree.command(name="set-background-url", description="Set background image URL for profile cards (admin only)")
+@app_commands.describe(url="Image URL (must end with .png, .jpg, etc.)")
+async def set_background_url(interaction: discord.Interaction, url: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don’t have permission to use this command.", ephemeral=True)
+        return
+    if not is_valid_image_url(url):
+        await interaction.response.send_message("❌ Please provide a valid image URL ending with .png, .jpg, .jpeg, .gif, or .webp", ephemeral=True)
+        return
+    settings = get_xp_settings(interaction.guild.id)
+    settings["background_url"] = url
+    save_data()
+    await interaction.response.send_message("✅ Background image URL set.")
+
+@tree.command(name="set-card-theme", description="Set card theme for profile cards (admin only)")
+@app_commands.describe(theme="Theme name, e.g. default, dark, sunset")
+async def set_card_theme(interaction: discord.Interaction, theme: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don’t have permission to use this command.", ephemeral=True)
+        return
+    allowed_themes = ["default", "dark", "sunset"]
+    if theme.lower() not in allowed_themes:
+        await interaction.response.send_message(f"❌ Invalid theme. Allowed: {', '.join(allowed_themes)}", ephemeral=True)
+        return
+    settings = get_xp_settings(interaction.guild.id)
+    settings["card_theme"] = theme.lower()
+    save_data()
+    await interaction.response.send_message(f"✅ Card theme set to {theme}.")
+
+@tree.command(name="resetleveling", description="Completely reset leveling data for this server (admin only)")
+async def resetleveling(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don’t have permission to use this command.", ephemeral=True)
+        return
+    guild_id = str(interaction.guild.id)
+    if guild_id in xp_data:
+        del xp_data[guild_id]
+    if guild_id in config:
+        # Reset config to default by removing
+        del config[guild_id]
+    save_data()
+    await interaction.response.send_message("✅ Leveling data and config have been fully reset for this server.")
 
 # Flask keep_alive server for Render
 app = Flask("")
