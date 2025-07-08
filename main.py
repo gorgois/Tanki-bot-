@@ -1,12 +1,15 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 import asyncio
 import json
 import os
 from datetime import datetime, timedelta
 import re
+import threading
+from flask import Flask
 
+# Intents setup
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -14,12 +17,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
+# Data files
 XP_FILE = "xp_data.json"
 CONFIG_FILE = "config.json"
 
+# Data holders
 xp_data = {}
 config = {}
 
+# Load XP and config data from files
 def load_data():
     global xp_data, config
     if os.path.exists(XP_FILE):
@@ -34,12 +40,14 @@ def load_data():
     else:
         config = {}
 
+# Save XP and config data to files
 def save_data():
     with open(XP_FILE, "w") as f:
         json.dump(xp_data, f, indent=4)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
 
+# Get or create default guild config
 def get_xp_settings(guild_id):
     guild_id = str(guild_id)
     if guild_id not in config:
@@ -54,12 +62,14 @@ def get_xp_settings(guild_id):
         }
     return config[guild_id]
 
+# Event: bot ready
 @bot.event
 async def on_ready():
     load_data()
     await tree.sync()
     print(f"Logged in as {bot.user}.")
 
+# Event: on message to give XP
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
@@ -97,7 +107,9 @@ async def on_message(message):
             await handle_level_up(message.author, new_level, message.guild)
 
     save_data()
+    await bot.process_commands(message)  # important to process commands
 
+# Level up handler
 async def handle_level_up(user, level, guild):
     settings = get_xp_settings(guild.id)
     role_id = settings["level_roles"].get(str(level))
@@ -119,8 +131,13 @@ async def handle_level_up(user, level, guild):
         except:
             pass
 
+# Helper: relaxed image URL validation
+def is_valid_image_url(url):
+    return bool(re.match(r'^https?:\/\/.*', url, re.IGNORECASE)) and \
+           bool(re.search(r'\.(png|jpg|jpeg|gif|webp)', url, re.IGNORECASE))
+
 # -------------------------
-# Slash commands section
+# Slash Commands Start Here
 # -------------------------
 
 @tree.command(name="rank", description="Check your rank and XP")
@@ -365,7 +382,6 @@ async def profile(interaction: discord.Interaction):
 
 @tree.command(name="bg-list", description="List available profile backgrounds")
 async def bg_list(interaction: discord.Interaction):
-    # Example list - you can add URLs here
     backgrounds = {
         "Default": "https://i.imgur.com/TP3E2Ch.png",
         "Dark": "https://i.imgur.com/8f7Q9nr.png",
@@ -376,10 +392,6 @@ async def bg_list(interaction: discord.Interaction):
         msg += f"**{name}**: {url}\n"
     await interaction.response.send_message(msg)
 
-def is_valid_image_url(url):
-    # Check if URL ends with a common image extension (case-insensitive)
-    return bool(re.match(r'^https?:\/\/.*\.(png|jpg|jpeg|gif|webp)$', url, re.IGNORECASE))
-
 @tree.command(name="set-profile-bg", description="Set profile background URL (admin only)")
 @app_commands.describe(url="Image URL for profile background")
 async def set_profile_bg(interaction: discord.Interaction, url: str):
@@ -388,7 +400,7 @@ async def set_profile_bg(interaction: discord.Interaction, url: str):
         return
 
     if not is_valid_image_url(url):
-        await interaction.response.send_message("❌ Please provide a valid image URL ending with .png, .jpg, .jpeg, .gif, or .webp")
+        await interaction.response.send_message("❌ Please provide a valid image URL containing .png, .jpg, .jpeg, .gif, or .webp")
         return
 
     settings = get_xp_settings(interaction.guild.id)
@@ -404,8 +416,9 @@ async def toggle_dms(interaction: discord.Interaction, enabled: bool):
         return
     settings = get_xp_settings(interaction.guild.id)
     settings["dm_enabled"] = enabled
-    save_data()
-    await interaction.response.send_message(f"✅ DM level-up messages {'enabled' if enabled else 'disabled'}.")
+save_data()
+    status = "enabled" if enabled else "disabled"
+    await interaction.response.send_message(f"✅ Level-up DM messages {status}.")
 
 @tree.command(name="top", description="Show top 10 users by XP")
 async def top(interaction: discord.Interaction):
@@ -422,10 +435,23 @@ async def top(interaction: discord.Interaction):
     embed = discord.Embed(title=f"🏆 Top 10 XP in {interaction.guild.name}", description=description, color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
 
+# --- Flask keep_alive server for Render ---
+app = Flask("")
+
+@app.route("/")
+def home():
+    return "Bot is alive!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# Start Flask web server in background thread
+threading.Thread(target=run_web).start()
 
 # Run bot
 if __name__ == "__main__":
-    TOKEN = os.getenv("DISCORD_TOKEN")  # Put your token in env variables or use other secure method
+    TOKEN = os.getenv("DISCORD_TOKEN")
     if not TOKEN:
         print("Error: DISCORD_TOKEN environment variable not set.")
     else:
