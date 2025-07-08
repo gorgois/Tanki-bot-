@@ -482,6 +482,33 @@ async def resetleveling(interaction: discord.Interaction):
     save_data()
     await interaction.response.send_message("✅ Leveling data and config have been fully reset for this server.")
 
+@tree.command(name="top", description="Show the top XP users in the server")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def top(interaction: discord.Interaction):
+    await interaction.response.defer()
+    guild_id = str(interaction.guild.id)
+    xp_data = load_xp_data()
+    if guild_id not in xp_data:
+        await interaction.followup.send("No XP data available for this server.")
+        return
+
+    members = xp_data[guild_id]
+    sorted_members = sorted(members.items(), key=lambda x: x[1]["xp"], reverse=True)
+    top_list = ""
+    for i, (user_id, data) in enumerate(sorted_members[:10], start=1):
+        user = interaction.guild.get_member(int(user_id))
+        if user:
+            top_list += f"**{i}. {user.display_name}** – XP: {data['xp']}, Level: {data['level']}\n"
+
+    if not top_list:
+        top_list = "No users with XP yet."
+
+    embed = discord.Embed(
+        title=f"🏆 Top 10 XP Users in {interaction.guild.name}",
+        description=top_list,
+        color=discord.Color.gold()
+    )
+    await interaction.followup.send(embed=embed)
 # Flask keep_alive server for Render
 app = Flask("")
 
