@@ -1,95 +1,72 @@
 import discord
-from discord.ext import commands
 from discord import app_commands
-import random, json, asyncio
-from flask import Flask
-from threading import Thread
+from discord.ext import commands
+import asyncio
 import os
+from keep_alive import keep_alive  # Flask keep-alive server
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
 intents.members = True
-intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-XP_FILE = "data.json"
-user_cooldowns = {}
+# Data stores (in-memory; for production use persistent DB or JSON)
+level_data = {}        # {guild_id: {user_id: {"xp": int, "level": int}}}
+leveling_enabled = {}  # {guild_id: bool}
+level_channels = {}    # {guild_id: channel_id}
+level_roles = {}       # {guild_id: {level: role_id}}
+xp_per_message = {}    # {guild_id: xp_amount_per_msg}
+user_cooldowns = {}    # {guild_id: {user_id: last_message_time}}
 
-app = Flask("")
+COOLDOWN_SECONDS = 30  # Cooldown between XP gains per user per server
 
-@app.route("/")
-def home():
-    return "Bot is running!"
-
-def run():
-    app.run(host="0.0.0.0", port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
-def load_data():
-    try:
-        with open(XP_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_data(data):
-    with open(XP_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+def calculate_level(xp: int) -> int:
+    # Simple leveling formula (can adjust as needed)
+    return int(xp ** 0.5 // 10)
 
 @bot.event
 async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     await tree.sync()
-    print(f"✅ Logged in as {bot.user}")
+    print("Slash commands synced.")
 
 @bot.event
-async def on_message(message):
-    if message.author.bot or not message.guild:
+async def on_message(message: discord.Message):
+    if message.author.bot or message.guild is None:
         return
 
-    data = load_data()
-    guild_id = str(message.guild.id)
-    user_id = str(message.author.id)
-    config = data.get(guild_id, {}).get("config", {})
+    guild_id = message.guild.id
+    user_id = message.author.id
 
-    if not config.get("enabled", False):
+    if not leveling_enabled.get(guild_id, False):
         return
 
+    # Handle cooldown per user per guild
+    user_cooldowns.setdefault(guild_id, {})
+    last_time = user_cooldowns[guild_id].get(user_id, 0)
     now = asyncio.get_event_loop().time()
-    cooldown = config.get("cooldown", 30)
-    if user_id in user_cooldowns and now - user_cooldowns[user_id] < cooldown:
+    if now - last_time < COOLDOWN_SECONDS:
         return
+    user_cooldowns[guild_id][user_id] = now
 
-    user_cooldowns[user_id] = now
+    # Initialize data
+    level_data.setdefault(guild_id, {})
+    user_stats = level_data[guild_id].setdefault(user_id, {"xp": 0, "level": 0})
 
-    if guild_id not in data:
-        data[guild_id] = {"config": {}, "users": {}}
-    if "users" not in data[guild_id]:
-        data[guild_id]["users"] = {}
-    if user_id not in data[guild_id]["users"]:
-        data[guild_id]["users"][user_id] = {"xp": 0, "level": 1}
+    # XP gain per message (default 10)
+    xp_gain = xp_per_message.get(guild_id, 10)
+    user_stats["xp"] += xp_gain
 
-    xp_min = config.get("xp_min", 5)
-    xp_max = config.get("xp_max", 15)
-    xp_gain = random.randint(xp_min, xp_max)
-    data[guild_id]["users"][user_id]["xp"] += xp_gain
-
-    xp = data[guild_id]["users"][user_id]["xp"]
-    level = data[guild_id]["users"][user_id]["level"]
-    next_level = level * 100
-
-    if xp >= next_level:
-        data[guild_id]["users"][user_id]["level"] += 1
-        level_channel_id = config.get("level_channel")
-        msg = f"🎉 {message.author.mention} leveled up to **Level {level + 1}**!"
-
-        if level_channel_id:
-            channel = bot.get_channel(int(level_channel_id))
+    new_level = calculate_level(user_stats["xp"])
+    if new_level > user_stats["level"]:
+        user_stats["level"] = new_level
+        # Send level-up message
+        channel_id = level_channels.get(guild_id)
+        msg = f"🎉 {message.author.mention} leveled up to **level {new_level}**!"
+        if channel_id:
+            channel = bot.get_channel(channel_id)
             if channel:
                 await channel.send(msg)
             else:
@@ -97,96 +74,140 @@ async def on_message(message):
         else:
             await message.channel.send(msg)
 
-        level_roles = config.get("level_roles", {})
-        role_id = level_roles.get(str(level + 1))
+        # Assign role if configured
+        roles_for_guild = level_roles.get(guild_id, {})
+        role_id = roles_for_guild.get(new_level)
         if role_id:
-            role = message.guild.get_role(int(role_id))
+            role = message.guild.get_role(role_id)
             if role:
-                await message.author.add_roles(role)
-                await message.channel.send(f"🏅 {message.author.mention} received the role **{role.name}**!")
+                try:
+                    await message.author.add_roles(role)
+                    await message.channel.send(f"🏅 {message.author.mention} received the role **{role.name}**!")
+                except discord.Forbidden:
+                    await message.channel.send("⚠️ I don't have permission to assign roles.")
 
-    save_data(data)
-
-@tree.command(name="rank", description="Show your current level and XP")
+@tree.command(name="rank", description="Show your level and XP")
 async def rank(interaction: discord.Interaction):
-    await interaction.response.defer()
-    data = load_data()
-    guild_id = str(interaction.guild.id)
-    user_id = str(interaction.user.id)
-
-    user = data.get(guild_id, {}).get("users", {}).get(user_id)
-    if not user:
-        await interaction.followup.send("You haven't earned any XP yet.")
+    guild_id = interaction.guild_id
+    user_id = interaction.user.id
+    user_stats = level_data.get(guild_id, {}).get(user_id)
+    if not user_stats:
+        await interaction.response.send_message("You have no XP yet.")
         return
 
-    level = user["level"]
-    xp = user["xp"]
-    next_level = level * 100
-    percent = int((xp / next_level) * 100)
-    bar = "█" * (percent // 10) + "—" * (10 - percent // 10)
+    level = user_stats["level"]
+    xp = user_stats["xp"]
+    next_level_xp = ((level + 1) * 10) ** 2  # Reverse from formula for next level threshold
+    percent = int((xp / next_level_xp) * 100) if next_level_xp else 100
+    bar_length = 10
+    filled_length = percent * bar_length // 100
+    bar = "█" * filled_length + "—" * (bar_length - filled_length)
 
-    await interaction.followup.send(
+    await interaction.response.send_message(
         f"📊 **{interaction.user.display_name}'s Rank**\n"
         f"Level: **{level}**\n"
-        f"XP: **{xp} / {next_level}**\n"
+        f"XP: **{xp} / {next_level_xp}**\n"
         f"Progress: `{bar}` ({percent}%)"
     )
 
-@tree.command(name="enable-leveling", description="Enable leveling system in the server")
+@tree.command(name="enable-leveling", description="Enable leveling system (Admin only)")
 @app_commands.checks.has_permissions(administrator=True)
 async def enable_leveling(interaction: discord.Interaction):
-    data = load_data()
-    guild_id = str(interaction.guild.id)
+    leveling_enabled[interaction.guild_id] = True
+    await interaction.response.send_message("✅ Leveling enabled.")
 
-    if guild_id not in data:
-        data[guild_id] = {"config": {}, "users": {}}
-
-    data[guild_id]["config"]["enabled"] = True
-    save_data(data)
-    await interaction.response.send_message("✅ Leveling system enabled.")
-
-@tree.command(name="disable-leveling", description="Disable leveling system in the server")
+@tree.command(name="disable-leveling", description="Disable leveling system (Admin only)")
 @app_commands.checks.has_permissions(administrator=True)
 async def disable_leveling(interaction: discord.Interaction):
-    data = load_data()
-    guild_id = str(interaction.guild.id)
+    leveling_enabled[interaction.guild_id] = False
+    await interaction.response.send_message("⛔ Leveling disabled.")
 
-    if guild_id in data:
-        data[guild_id]["config"]["enabled"] = False
-        save_data(data)
-
-    await interaction.response.send_message("⛔ Leveling system disabled.")
-
-@tree.command(name="set-level-channel", description="Set channel where level-up messages will be sent")
+@tree.command(name="set-level-channel", description="Set channel for level-up messages (Admin only)")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(channel="The channel to send level-up messages")
+@app_commands.describe(channel="Channel to send level-up messages")
 async def set_level_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data()
-    guild_id = str(interaction.guild.id)
+    level_channels[interaction.guild_id] = channel.id
+    await interaction.response.send_message(f"✅ Level-up messages will be sent in {channel.mention}.")
 
-    if guild_id not in data:
-        data[guild_id] = {"config": {}, "users": {}}
-
-    data[guild_id]["config"]["level_channel"] = str(channel.id)
-    save_data(data)
-    await interaction.response.send_message(f"📢 Level-up messages will be sent in {channel.mention}.")
-
-@tree.command(name="set-level-role", description="Give a role when reaching a certain level")
+@tree.command(name="set-level-role", description="Assign a role at a specific level (Admin only)")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(level="Level number", role="Role to give")
+@app_commands.describe(level="Level number", role="Role to assign")
 async def set_level_role(interaction: discord.Interaction, level: int, role: discord.Role):
-    data = load_data()
-    guild_id = str(interaction.guild.id)
+    level_roles.setdefault(interaction.guild_id, {})
+    level_roles[interaction.guild_id][level] = role.id
+    await interaction.response.send_message(f"✅ Role {role.mention} will be given at level {level}.")
 
-    if guild_id not in data:
-        data[guild_id] = {"config": {}, "users": {}}
+@tree.command(name="top", description="Show top 10 users by XP")
+async def top(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    guild_data = level_data.get(guild_id, {})
+    if not guild_data:
+        await interaction.response.send_message("No XP data found.")
+        return
 
-    if "level_roles" not in data[guild_id]["config"]:
-        data[guild_id]["config"]["level_roles"] = {}
+    sorted_users = sorted(guild_data.items(), key=lambda item: item[1]["xp"], reverse=True)[:10]
+    description = "\n".join(
+        f"{i+1}. <@{user_id}> - Level {stats['level']} | XP {stats['xp']}"
+        for i, (user_id, stats) in enumerate(sorted_users)
+    )
+    await interaction.response.send_message(f"🏆 **Top 10 users:**\n{description}")
 
-    data[guild_id]["config"]["level_roles"][str(level)] = str(role.id)
-    save_data(data)
-    await interaction.response.send_message(f"🏅 Role {role.mention} will be given at level {level}.")
+@tree.command(name="xp", description="Check another user's XP")
+@app_commands.describe(user="User to check")
+async def xp(interaction: discord.Interaction, user: discord.User):
+    guild_id = interaction.guild_id
+    user_stats = level_data.get(guild_id, {}).get(user.id)
+    if not user_stats:
+        await interaction.response.send_message(f"{user.mention} has no XP.")
+        return
+    await interaction.response.send_message(
+        f"{user.mention} is Level {user_stats['level']} with {user_stats['xp']} XP."
+    )
+
+@tree.command(name="reset-xp", description="Reset a user's XP (Admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(user="User to reset")
+async def reset_xp(interaction: discord.Interaction, user: discord.User):
+    guild_id = interaction.guild_id
+    if user.id in level_data.get(guild_id, {}):
+        level_data[guild_id][user.id] = {"xp": 0, "level": 0}
+        await interaction.response.send_message(f"{user.mention}'s XP has been reset.")
+    else:
+        await interaction.response.send_message("That user has no XP.")
+
+@tree.command(name="set-xp", description="Set a user's XP (Admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(user="User to set XP", amount="XP amount")
+async def set_xp(interaction: discord.Interaction, user: discord.User, amount: int):
+    guild_id = interaction.guild_id
+    level_data.setdefault(guild_id, {})[user.id] = {"xp": amount, "level": calculate_level(amount)}
+    await interaction.response.send_message(f"{user.mention}'s XP set to {amount}.")
+
+@tree.command(name="help", description="Show bot commands list")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "**Level-Up Bot Commands:**\n"
+        "• `/rank` — Show your level and XP\n"
+        "• `/top` — Show top 10 users by XP\n"
+        "• `/xp @user` — Show XP of another user\n"
+        "• `/reset-xp @user` — Reset a user's XP (Admin only)\n"
+        "• `/set-xp @user amount` — Set a user's XP (Admin only)\n"
+        "• `/enable-leveling` — Enable leveling (Admin only)\n"
+        "• `/disable-leveling` — Disable leveling (Admin only)\n"
+        "• `/set-level-channel` — Set channel for level-up messages (Admin only)\n"
+        "• `/set-level-role level @role` — Assign role at level (Admin only)\n"
+        "• `/set-xp-rate amount` — Set XP per message (Admin only)\n"
+    )
+
+@tree.command(name="set-xp-rate", description="Set how much XP per message (Admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(amount="XP per message (default 10)")
+async def set_xp_rate(interaction: discord.Interaction, amount: int):
+    if amount < 0:
+        await interaction.response.send_message("❌ XP amount must be zero or higher.")
+        return
+    xp_per_message[interaction.guild_id] = amount
+    await interaction.response.send_message(f"✅ XP per message set to {amount}.")
 
 if __name__ == "__main__":
     keep_alive()
