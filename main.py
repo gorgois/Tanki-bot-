@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta
+import re
 
 intents = discord.Intents.default()
 intents.members = True
@@ -35,9 +36,9 @@ def load_data():
 
 def save_data():
     with open(XP_FILE, "w") as f:
-        json.dump(xp_data, f)
+        json.dump(xp_data, f, indent=4)
     with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f)
+        json.dump(config, f, indent=4)
 
 def get_xp_settings(guild_id):
     guild_id = str(guild_id)
@@ -58,6 +59,7 @@ async def on_ready():
     load_data()
     await tree.sync()
     print(f"Logged in as {bot.user}.")
+
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
@@ -117,6 +119,10 @@ async def handle_level_up(user, level, guild):
         except:
             pass
 
+# -------------------------
+# Slash commands section
+# -------------------------
+
 @tree.command(name="rank", description="Check your rank and XP")
 async def rank(interaction: discord.Interaction):
     user = interaction.user
@@ -170,6 +176,7 @@ async def list_levels(interaction: discord.Interaction):
         if role:
             msg += f"Level {lvl}: {role.mention}\n"
     await interaction.response.send_message(msg)
+
 @tree.command(name="set-level-channel", description="Set channel for level-up messages (admin only)")
 @app_commands.describe(channel="Channel to send level-up messages")
 async def set_level_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -369,20 +376,32 @@ async def bg_list(interaction: discord.Interaction):
         msg += f"**{name}**: {url}\n"
     await interaction.response.send_message(msg)
 
-@tree.command(name="set-profile-bg", description="Set profile background URL")
+def is_valid_image_url(url):
+    # Check if URL ends with a common image extension (case-insensitive)
+    return bool(re.match(r'^https?:\/\/.*\.(png|jpg|jpeg|gif|webp)$', url, re.IGNORECASE))
+
+@tree.command(name="set-profile-bg", description="Set profile background URL (admin only)")
 @app_commands.describe(url="Image URL for profile background")
 async def set_profile_bg(interaction: discord.Interaction, url: str):
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message("❌ You don’t have permission to use this command.", ephemeral=True)
         return
+
+    if not is_valid_image_url(url):
+        await interaction.response.send_message("❌ Please provide a valid image URL ending with .png, .jpg, .jpeg, .gif, or .webp")
+        return
+
     settings = get_xp_settings(interaction.guild.id)
     settings["profile_bg"] = url
     save_data()
     await interaction.response.send_message("✅ Profile background set!")
 
-@tree.command(name="toggle-dms", description="Toggle DM level-up messages")
+@tree.command(name="toggle-dms", description="Toggle DM level-up messages (admin only)")
 @app_commands.describe(enabled="True to enable, False to disable")
 async def toggle_dms(interaction: discord.Interaction, enabled: bool):
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don’t have permission to use this command.", ephemeral=True)
+        return
     settings = get_xp_settings(interaction.guild.id)
     settings["dm_enabled"] = enabled
     save_data()
@@ -399,43 +418,15 @@ async def top(interaction: discord.Interaction):
     for i, (user_id, data) in enumerate(sorted_users, 1):
         user = interaction.guild.get_member(int(user_id))
         name = user.display_name if user else f"User ID {user_id}"
-        description += f"{i}. {name} — Level {data['level']} ({data['xp']} XP)\n"
-    embed = discord.Embed(title="Top 10 XP Leaders", description=description, color=discord.Color.gold())
+        description += f"**{i}. {name}** — Level {data['level']} ({data['xp']} XP)\n"
+    embed = discord.Embed(title=f"🏆 Top 10 XP in {interaction.guild.name}", description=description, color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
 
-@tree.command(name="help", description="Show list of bot commands")
-async def help_command(interaction: discord.Interaction):
-    help_text = (
-        "**Level-Up Bot Commands:**\n"
-        "• `/rank` — Show your level and XP\n"
-        "• `/xp @user` — Show XP of another user\n"
-        "• `/top` — Show top 10 users by XP\n"
-        "• `/leaderboard-range start end` — Show leaderboard slice\n"
-        "• `/next-level` — XP needed for next level\n"
-        "• `/add-role-level level @role` — Assign role at level (Admin)\n"
-        "• `/remove-role-level level` — Remove role reward (Admin)\n"
-        "• `/levels` — List level-role rewards\n"
-        "• `/set-level-channel #channel` — Set level-up messages channel (Admin)\n"
-        "• `/enable-leveling` — Enable leveling (Admin)\n"
-        "• `/disable-leveling` — Disable leveling (Admin)\n"
-        "• `/set-xp-rate amount` — XP per message (Admin)\n"
-        "• `/set-xp-cooldown seconds` — XP cooldown in seconds (Admin)\n"
-        "• `/set-xp @user amount` — Set user XP (Admin)\n"
-        "• `/reset-xp @user` — Reset user XP (Admin)\n"
-        "• `/daily` — Claim daily XP bonus\n"
-        "• `/bonus-xp @user amount` — Grant bonus XP (Admin)\n"
-        "• `/profile` — Show your profile card\n"
-        "• `/bg-list` — List profile backgrounds\n"
-        "• `/set-profile-bg url` — Set profile background (Admin)\n"
-        "• `/toggle-dms true/false` — Enable/disable DM level-up msgs\n"
-        "• `/help` — Show this help message\n"
-    )
-    await interaction.response.send_message(help_text)
 
 # Run bot
 if __name__ == "__main__":
-    TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+    TOKEN = os.getenv("DISCORD_TOKEN")  # Put your token in env variables or use other secure method
     if not TOKEN:
-        print("Error: DISCORD_BOT_TOKEN env variable not set.")
-        exit(1)
-    bot.run(TOKEN)
+        print("Error: DISCORD_TOKEN environment variable not set.")
+    else:
+        bot.run(TOKEN)
