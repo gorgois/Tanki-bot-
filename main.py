@@ -407,7 +407,6 @@ async def set_profile_bg(interaction: discord.Interaction, url: str):
     settings["profile_bg"] = url
     save_data()
     await interaction.response.send_message("✅ Profile background set!")
-
 @tree.command(name="toggle-dms", description="Toggle DM level-up messages (admin only)")
 @app_commands.describe(enabled="True to enable, False to disable")
 async def toggle_dms(interaction: discord.Interaction, enabled: bool):
@@ -416,7 +415,7 @@ async def toggle_dms(interaction: discord.Interaction, enabled: bool):
         return
     settings = get_xp_settings(interaction.guild.id)
     settings["dm_enabled"] = enabled
-save_data()
+    save_data()
     status = "enabled" if enabled else "disabled"
     await interaction.response.send_message(f"✅ Level-up DM messages {status}.")
 
@@ -435,7 +434,7 @@ async def top(interaction: discord.Interaction):
     embed = discord.Embed(title=f"🏆 Top 10 XP in {interaction.guild.name}", description=description, color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
 
-# --- Flask keep_alive server for Render ---
+# Flask keep_alive server for Render
 app = Flask("")
 
 @app.route("/")
@@ -446,10 +445,8 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Start Flask web server in background thread
 threading.Thread(target=run_web).start()
 
-# Run bot
 if __name__ == "__main__":
     TOKEN = os.getenv("DISCORD_TOKEN")
     if not TOKEN:
