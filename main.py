@@ -77,6 +77,7 @@ async def play(interaction: discord.Interaction):
     users[user_id]["crystals"] += crystal_gain
     if got_goldbox:
         users[user_id]["goldboxes"] += 1
+        users[user_id]["crystals"] += 1000  # add 1000 crystals instantly for gold box
 
     save_data(users)
 
@@ -87,7 +88,7 @@ async def play(interaction: discord.Interaction):
     embed.add_field(name="XP Gained", value=f"`+{xp_gain}`", inline=True)
     embed.add_field(name="Crystals", value=f"{EMOJIS['crystals']} +{crystal_gain}", inline=True)
     if got_goldbox:
-        embed.add_field(name="🎉 Jackpot!", value=f"You caught a {EMOJIS['goldbox']} gold box!", inline=False)
+        embed.add_field(name="🎉 Jackpot!", value=f"You caught a {EMOJIS['goldbox']} gold box! +1000 crystals!", inline=False)
 
     embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id}.png?size=96")
 
