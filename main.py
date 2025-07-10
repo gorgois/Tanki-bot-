@@ -15,7 +15,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-DATA_FILE = "database.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "database.json")
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -37,14 +38,17 @@ def get_rank(xp):
 
 def build_progress_bar(current_xp, current_req, next_req, length=20):
     if next_req == current_req:
-        # max rank
         return "█" * length, 100
 
     progress = (current_xp - current_req) / (next_req - current_req)
-    progress = max(0, min(progress, 1))  # Clamp between 0 and 1
+    progress = max(0, min(progress, 1))
 
     filled_length = int(length * progress)
-    bar = "█" * filled_length + "░" * (length - filled_length)
+
+    filled_char = "▓"
+    empty_char = "░"
+
+    bar = filled_char * filled_length + empty_char * (length - filled_length)
     percent = int(progress * 100)
     return bar, percent
 
@@ -99,7 +103,6 @@ async def profile(interaction: discord.Interaction):
     data = users[user_id]
     rank, current_req, emoji_id = get_rank(data["xp"])
 
-    # Find next rank info or max rank
     next_rank_data = None
     for r, xp_req, eid in RANKS:
         if xp_req > data["xp"]:
@@ -110,7 +113,6 @@ async def profile(interaction: discord.Interaction):
         next_rank, next_req, next_emoji_id = next_rank_data
         bar, percent = build_progress_bar(data["xp"], current_req, next_req)
     else:
-        # Max rank
         next_rank = rank
         next_req = current_req
         next_emoji_id = emoji_id
@@ -120,7 +122,6 @@ async def profile(interaction: discord.Interaction):
     embed = discord.Embed(title=f"📜 {interaction.user.name}'s Profile", color=0x00BFFF)
     embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
 
-    # Show rank progression bar with ranks and percentage
     progress_line = f"<:{rank}:{emoji_id}> [{bar}] <:{next_rank}:{next_emoji_id}> {percent}%"
     embed.add_field(name="Rank Progress", value=progress_line, inline=False)
 
